@@ -4,6 +4,7 @@
 //! scheduled on the scene's low-priority workers, never the frame thread.
 
 pub mod animation;
+pub mod animation_model;
 pub mod demo;
 pub mod files;
 mod live;
@@ -118,6 +119,9 @@ pub struct Preferences {
     pub permissions_by_type: permissions::ByType,
     pub show_payment: bool,
     pub preview_on_avatar: bool,
+    #[serde(deserialize_with = "animation_model::deserialize_local_models")]
+    pub animation_models: Vec<animation_model::Saved>,
+    pub animation_model_last: Option<Uuid>,
     pub mesh_auto_weights: bool,
     pub mesh_auto_preview_weights: bool,
     pub mesh_reliable_default: bool,
@@ -150,6 +154,8 @@ impl Default for Preferences {
             permissions_by_type: Default::default(),
             show_payment: true,
             preview_on_avatar: false,
+            animation_models: Vec::new(),
+            animation_model_last: None,
             mesh_auto_weights: true,
             mesh_auto_preview_weights: true,
             mesh_reliable_default: false,
@@ -323,6 +329,7 @@ pub struct Entry {
     pub material_large_pending: [bool; 4],
     pub texture_target: usize,
     pub player: animation::Player,
+    pub animation_model: animation_model::Selection,
     pub mesh_player: mesh::preview::Player,
     pub sound: sound::Editor,
     pub local: bool,
@@ -393,6 +400,7 @@ impl Entry {
             material_large_pending: [false; 4],
             texture_target: 0,
             player: Default::default(),
+            animation_model: Default::default(),
             mesh_player: Default::default(),
             local: false,
             local_pending: false,
@@ -415,6 +423,7 @@ impl Entry {
 }
 
 pub(super) enum Worker {
+    AnimationModel(u64, Option<Result<Arc<animation_model::Model>, String>>),
     Loaded(Uuid, Vec<Entry>),
     Reloaded(Uuid, Result<Vec<Entry>, String>),
     Encoded(Uuid, Result<Vec<u8>, String>),
@@ -503,6 +512,9 @@ pub struct Imports {
     pub demo_upload_started: bool,
     pub demo_animation_positioned: bool,
     pub own_avatar_preview: Option<Uuid>,
+    pub animation_model_cache: HashMap<Uuid, std::sync::Weak<animation_model::Model>>,
+    animation_model_selection: animation_model::Selection,
+    pub animation_models_dirty: bool,
     pub load_preferences: Preferences,
     cost_overrides: HashMap<(Kind, bool), i32>,
     pub spent: i32,
@@ -553,6 +565,9 @@ impl Default for Imports {
             demo_upload_started: false,
             demo_animation_positioned: false,
             own_avatar_preview: None,
+            animation_model_cache: HashMap::new(),
+            animation_model_selection: Default::default(),
+            animation_models_dirty: false,
             load_preferences: Default::default(),
             cost_overrides: HashMap::new(),
             spent: 0,
@@ -1065,6 +1080,9 @@ impl Imports {
                         jobs.discard(pixels);
                     }
                 }
+                Worker::AnimationModel(generation, result) => {
+                    self.complete_animation_model(generation, result);
+                }
                 Worker::Model(id, generation, model, prepared) => {
                     if let Some(entry) = self.entries.iter_mut().find(|e| e.id == id && e.preview_generation == generation) {
                         entry.preview_pending = false;
@@ -1233,6 +1251,8 @@ impl Imports {
                 _ => {}
             }
         }
+        self.restore_animation_model(jobs, ctx, world.avatar_lib.clone());
+        self.sync_animation_models();
         if self.current.is_none()
             && let Some(mut step) = self.queue.pop_front()
         {

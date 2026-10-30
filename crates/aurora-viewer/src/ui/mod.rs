@@ -95,6 +95,7 @@ pub mod portals;
 pub mod presence;
 pub mod profile;
 pub mod region;
+pub mod region_message_prompt;
 pub mod region_restart;
 pub mod remote_object;
 pub mod report_abuse;
@@ -246,8 +247,8 @@ impl Panels {
             about: false,
             stream_title: settings.audio.stream_title_window,
             stream_title_history: false,
-            camera_controls: false,
-            movement_controls: false,
+            camera_controls: settings.show_camera_controls,
+            movement_controls: settings.show_movement_controls,
             nav_edit: None,
             nav_edit_new: false,
         }

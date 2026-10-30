@@ -278,6 +278,19 @@ pub(crate) fn line_style(style: crate::settings::ChatStyle, group: Option<bool>)
 }
 
 impl ChatUi {
+    /// Recreate only the account-independent nearby window. IMs, messages,
+    /// drafts and focus never cross sessions. Its stable floater id lets the
+    /// existing layout restore position, size and minimized state.
+    pub fn from_settings(settings: &crate::settings::Settings) -> Self {
+        let mut st = Self::default();
+        st.popped.restore_nearby(settings.nearby_chat_window);
+        st
+    }
+
+    pub fn remember_layout(&self, settings: &mut crate::settings::Settings) {
+        settings.nearby_chat_window = self.popped.nearby_state();
+    }
+
     /// `start_gesture` and FSNearbyChat::showDefaultChatBar
     /// (indra/newview/llviewerinput.cpp, fsnearbychathub.cpp): take the local
     /// bar's keyboard, adding `/` only to an empty editor. A conversation's
@@ -1882,8 +1895,9 @@ impl Copied<'_> {
 }
 
 /// The selection of the lines (`select.rs`), as in Firestorm's transcript:
-/// a drag selects across them (never moving the window), a click without a
-/// drag clears it; a press gives them the keyboard, then Ctrl+A selects the
+/// a drag selects across them (never moving the window), a double click
+/// selects a word, a click without a drag clears it; a press gives them the
+/// keyboard, then Ctrl+A selects the
 /// whole conversation, Ctrl+C (Ctrl+Insert) copies the selection, Escape
 /// clears it, and what is typed goes to the conversation's field.
 fn select_lines(
@@ -1932,6 +1946,14 @@ fn select_lines(
     }
     if content.clicked() && content.interact_pointer_pos().is_some_and(|p| area.contains(p)) {
         sel.clear();
+    }
+    // a double click selects the word under the pointer (its second click
+    // cleared the selection just above)
+    if content.double_clicked()
+        && let Some(pos) = content.interact_pointer_pos().filter(|p| area.contains(*p))
+        && let Some((seq, range, text)) = select::word_at(drawn, pos)
+    {
+        sel.select_in_row(seq, range, text);
     }
     // (no text cursor over the lines, though a drag selects them: the
     // arrow, the hand on links and names; the human's choice of 2026-10-16)
