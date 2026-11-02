@@ -7,6 +7,10 @@ repository.workspace = true
 publish.workspace = true
 
 [features]
+# On by default: a plain `cargo run` must carry the IM translator, or `/tr`
+# only says it is not built in. `--no-default-features` builds without
+# llama.cpp (no CMake or C++ toolchain needed).
+default = ["translator"]
 # The local translation model of the IM translator (llama.cpp on the CPU;
 # `aurora-translate/vulkan` adds the GPU).
 translator = ["aurora-translate/llama"]

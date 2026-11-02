@@ -5667,9 +5667,10 @@ failure. Grid validation and any paid upload are performed by the human.
   fake one answering "[<code>] <text>" after 0.4 s, so no download is needed.
   **`AURORA_TRANSLATE_REAL=1`** uses the real model instead: when it is not
   in `<data folder>/models` yet, `/tr` or the suggestion opens the download
-  dialog (TranslateGemma 4B, 2.5 GB). With a viewer built
-  `--features aurora-viewer/translator`; without it, `/tr` says translation
-  is not built in.
+  dialog (TranslateGemma 4B, 2.5 GB). The `translator` feature that carries
+  the model's runtime is on by default; a viewer built with
+  `--no-default-features` leaves it out, and `/tr` then says translation is
+  not built in.
 - **`AURORA_DEMO_KEYWORDS=1|prefs`**: keyword alerts on for the run, never saved
   (the two keywords of `demo-keywords-words`, "party, builders" in English,
   "fête, constructeurs" in French; colour change and sound on), with the
