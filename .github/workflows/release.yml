@@ -14,6 +14,13 @@ name: Release
 on:
   push:
     tags: ['v[0-9]+.[0-9]+.[0-9]+*']
+  # by hand, for a tag already pushed (run it on that tag's ref)
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Version tag to build and publish (already pushed)
+        required: true
+        type: string
   workflow_call:
     inputs:
       tag:
