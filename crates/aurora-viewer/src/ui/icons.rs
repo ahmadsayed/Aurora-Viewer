@@ -284,6 +284,7 @@ const FILLED: &[(&str, &[u8])] = svg_list!(
     "device-desktop",
     "device-floppy",
     "device-gamepad",
+    "device-vision-pro",
     "credit-card",
     "device-speaker",
     "device-tv",

@@ -154,8 +154,8 @@ pub struct BuildSettings {
     pub show_physics_shape: bool,
     /// FSCopyObjKeySeparator for "Copy UUID".
     pub copy_key_separator: String,
-    /// LimitSelectDistance. Off by default, unlike the Legacy Viewer: the
-    /// simulator keeps its own limits, so nothing near or far is out of reach.
+    /// LimitSelectDistance, on by default like the Legacy Viewer: a
+    /// rectangle drawn from a skybox stops before the ground's objects.
     pub limit_select_distance: bool,
     /// MaxSelectDistance (m from the avatar).
     pub max_select_distance: f32,
@@ -483,7 +483,7 @@ impl Default for BuildSettings {
             sync_materials: false,
             show_physics_shape: false,
             copy_key_separator: ",".into(),
-            limit_select_distance: false,
+            limit_select_distance: true,
             max_select_distance: MAX_SELECT_DISTANCE,
             limit_drag_distance: true,
             max_drag_distance: MAX_DRAG_DISTANCE,
@@ -568,6 +568,19 @@ pub struct Bounds {
     pub half: Vec3,
 }
 
+/// The prims of an unlinked whole-object selection. The Legacy Viewer keeps
+/// one LLSelectNode per prim, so after LLSelectMgr::sendDelink every former
+/// child is still selected as its own object; Aurora selects roots only, so
+/// each prim joins the selection once the simulator makes it a root.
+#[derive(Debug)]
+struct PendingUnlink {
+    /// Every prim of the unlink, the former roots included.
+    prims: Vec<ObjKey>,
+    /// Prims still waiting for the update that makes them roots.
+    waiting: Vec<ObjKey>,
+    started: Instant,
+}
+
 pub struct BuildTool {
     wheel_selection: cycle::Wheel,
     /// Last inspected selection/mode; object display choices live in the world.
@@ -622,6 +635,8 @@ pub struct BuildTool {
     pub selection_linked: bool,
     /// Ordered link instruction awaiting confirmed simulator parents.
     pending_link: Option<(Vec<Uuid>, Instant)>,
+    /// Unlink awaiting the simulator's new roots.
+    pending_unlink: Option<PendingUnlink>,
     /// ObjectProperties of selected objects.
     pub props: HashMap<Uuid, ObjectProps>,
     pub cam: Cam,
@@ -677,6 +692,7 @@ impl Default for BuildTool {
             menu_selection: false,
             selection_linked: false,
             pending_link: None,
+            pending_unlink: None,
             props: HashMap::new(),
             cam: Cam::default(),
             out: Vec::new(),
@@ -1230,9 +1246,43 @@ impl BuildTool {
         }
     }
 
+    /// Prims of an unlink join the selection as the simulator makes them
+    /// roots, after the selected former root (PendingUnlink).
+    fn advance_unlink(&mut self, world: &World, now: Instant) {
+        let Some(mut pending) = self.pending_unlink.take() else {
+            return;
+        };
+        // a selection changed in the meantime is the user's: leave it alone
+        if self.selection_linked || !pending.prims.iter().any(|k| self.is_selected(k)) {
+            return;
+        }
+        let mut joined = Vec::new();
+        pending.waiting.retain(|key| match world.objects.index_of(key) {
+            None => false,
+            Some(i) if root_of(world, i) != i => true,
+            Some(_) => {
+                joined.push(*key);
+                false
+            }
+        });
+        for key in &joined {
+            if !self.is_selected(key) {
+                self.selection.push(*key);
+            }
+        }
+        // ObjectSelect brings the new roots' properties to the edit floater
+        for (handle, ids) in self.wire_ids(world, &joined, false) {
+            self.send(BuildCmd::Select { handle, local_ids: ids });
+        }
+        if !pending.waiting.is_empty() && now.saturating_duration_since(pending.started) < Duration::from_secs(30) {
+            self.pending_unlink = Some(pending);
+        }
+    }
+
     /// Forget objects that are gone; drop a selection left far behind
     /// (LLSelectMgr::deselectAllIfTooFar).
     fn prune(&mut self, world: &World, s: &BuildSettings, now: Instant) {
+        self.advance_unlink(world, now);
         // Parent changes are authoritative only after simulator object updates.
         // Former roots become one whole-object selection after a successful link.
         if !self.selection_linked
@@ -1295,6 +1345,8 @@ impl BuildTool {
     }
 
     /// Delete (to the trash): roots only (LLSelectMgr::selectDelete).
+    /// The active group goes in DeRezObject, like LLSelectMgr::packDeRezHeader
+    /// (indra/newview/llselectmgr.cpp), regardless of the parcel group.
     pub fn delete(&mut self, world: &mut World) {
         if self.attachment_selected(world) {
             return;
@@ -1320,7 +1372,7 @@ impl BuildTool {
                 local_ids: ids,
                 destination: derez::TRASH,
                 destination_id: trash,
-                group_id: Uuid::nil(),
+                group_id: world.groups.active,
             });
         }
         // LLSelectMgr::confirmDelete
@@ -1338,6 +1390,7 @@ impl BuildTool {
 
     /// Take into the folder the objects were rezzed from (handle_take), take
     /// a copy into the Objects folder (handle_take_copy; derez_objects).
+    /// DeRezObject uses the active group (indra/newview/llviewermenu.cpp).
     pub fn take(&mut self, world: &mut World, copy: bool) {
         if self.attachment_selected(world) {
             return;
@@ -1364,7 +1417,7 @@ impl BuildTool {
                 local_ids: ids,
                 destination: dest,
                 destination_id: objects,
-                group_id: Uuid::nil(),
+                group_id: world.groups.active,
             });
         }
         // derez_objects
@@ -1376,7 +1429,8 @@ impl BuildTool {
 
     /// "Take as separate items" / "Take copies as separate items"
     /// (derez_objects_separate): one DeRezObject per root, each its own
-    /// transaction and inventory item.
+    /// transaction and inventory item, with the active group
+    /// (derez_objects, indra/newview/llviewermenu.cpp).
     pub fn take_separate(&mut self, world: &mut World, copy: bool) {
         if self.attachment_selected(world) {
             return;
@@ -1400,7 +1454,7 @@ impl BuildTool {
                     local_ids: vec![local_id],
                     destination,
                     destination_id: objects,
-                    group_id: Uuid::nil(),
+                    group_id: world.groups.active,
                 });
                 world.ui_sounds.push(crate::ui_sound::UiSound::ObjectRezOut);
             }
@@ -1411,7 +1465,8 @@ impl BuildTool {
     }
 
     /// Ctrl+D: copies 0.5 m away, selected (LLSelectMgr::duplicate).
-    pub fn duplicate(&mut self, world: &mut World, offset: Vec3, select_copy: bool) {
+    /// Group selection follows packDuplicateHeader (indra/newview/llselectmgr.cpp).
+    pub fn duplicate(&mut self, world: &mut World, s: &BuildSettings, offset: Vec3, select_copy: bool) {
         if self.attachment_selected(world) {
             return;
         }
@@ -1430,7 +1485,7 @@ impl BuildTool {
                 local_ids: ids,
                 offset,
                 flags,
-                group_id: Uuid::nil(),
+                group_id: world.group_for_rez(s.rez_under_land_group),
             });
         }
     }
@@ -1487,6 +1542,18 @@ impl BuildTool {
         }
         for (handle, ids) in self.group_by_region(world, &prims) {
             self.send(BuildCmd::Delink { handle, local_ids: ids });
+        }
+        // with "Edit linked" the selection already holds each prim
+        if !self.selection_linked {
+            let keys: Vec<ObjKey> = highlighted_of(world, &self.selection, false)
+                .into_iter()
+                .filter_map(|(i, _)| world.objects.get(i).map(|o| o.key))
+                .collect();
+            self.pending_unlink = Some(PendingUnlink {
+                waiting: keys.iter().copied().filter(|k| !self.is_selected(k)).collect(),
+                prims: keys,
+                started: Instant::now(),
+            });
         }
         self.status = aurora_i18n::tr!("build-mod-object-unlinked").into();
         self.costs_stale();
@@ -2021,7 +2088,7 @@ impl BuildTool {
         };
         let p = aurora_net::build::NewPrim {
             handle,
-            group_id: Uuid::nil(),
+            group_id: world.group_for_rez(s.rez_under_land_group),
             pcode,
             material: s.new_prim_material,
             add_flags: flags,
@@ -2074,7 +2141,7 @@ impl BuildTool {
             self.send(BuildCmd::DuplicateOnRay {
                 handle,
                 local_ids,
-                group_id: Uuid::nil(),
+                group_id: world.group_for_rez(s.rez_under_land_group),
                 ray_start,
                 ray_end,
                 ray_target,

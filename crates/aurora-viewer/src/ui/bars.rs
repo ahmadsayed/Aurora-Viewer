@@ -10,6 +10,7 @@ pub mod dock;
 pub mod favorites;
 mod graphics;
 pub mod islands;
+mod location_suggest;
 mod place;
 pub mod side;
 pub(crate) mod sizing;
@@ -24,6 +25,7 @@ use egui::{Color32, RichText, Vec2};
 
 #[derive(Default)]
 pub enum BarAction {
+    ToggleVr,
     IkEdit,
     Poser,
     /// Build › Edit particles (Object.EditParticles).
@@ -84,6 +86,15 @@ pub enum BarAction {
     VoicePrefs,
     /// Location typed or pasted in the navigation bar (SLURL, Region/x/y/z...).
     TeleportTo(String),
+    /// A landmark chosen in the location field's suggestions, by its asset.
+    TeleportLandmark(uuid::Uuid),
+    /// A place of the teleport history chosen in the location field's
+    /// suggestions (teleportViaLocation: the history does not move).
+    TeleportPlace {
+        region: String,
+        handle: aurora_net::RegionHandle,
+        position: glam::Vec3,
+    },
     /// Communicate > Online status changed.
     SetStatus(crate::world::status::StatusModes),
     /// Open the chat preferences (automatic responses).
@@ -182,6 +193,8 @@ pub struct StatusInfo<'a> {
     pub tp_forward: Option<String>,
     /// Every place of the session, for the arrows' list.
     pub tp_session: crate::world::tphistory::Session<'a>,
+    /// The landmarks the location field suggests by name.
+    pub landmarks: std::sync::Arc<[crate::world::landmarks::Named]>,
     pub maturity: &'a str,
     pub position: glam::Vec3,
     pub fps: f32,
@@ -664,6 +677,16 @@ fn main_menus(ui: &mut egui::Ui, p: &Palette, panels: &mut Panels, st: &StatusIn
         if menu::check(ui, p, "receipt-filled", tracker, panels.money_tracker, true) {
             super::money_tracker::toggle(ui.ctx(), &mut panels.money_tracker);
         }
+        // menu_viewer.xml: Me › Experiences (Picks, before it there, has
+        // no entry in this menu)
+        flip_window(
+            ui,
+            p,
+            "flask-filled",
+            aurora_i18n::tr!("ui-experiences-title"),
+            super::experiences::WINDOW,
+            &mut panels.experiences,
+        );
         menu::separator(ui, p);
         if menu::item(ui, p, "home-filled", aurora_i18n::tr!("common-go-home")) {
             *action = BarAction::TeleportHome;
@@ -1578,8 +1601,9 @@ fn voice_light(ui: &mut egui::Ui, p: &Palette, icons: &Icons, light: crate::voic
 /// Region (x, y, z)"; a click turns it into the SLURL of the position,
 /// selected and ready to copy; typing or pasting a place then Enter
 /// teleports there; Escape or a click elsewhere restores the location.
-fn location_field(ui: &mut egui::Ui, p: &Palette, panels: &mut Panels, loc: &str, slurl: &str, w: f32) -> Option<BarAction> {
+fn location_field(ui: &mut egui::Ui, p: &Palette, panels: &mut Panels, st: &StatusInfo, loc: &str, w: f32) -> Option<BarAction> {
     let id = egui::Id::unique("nav_location_edit");
+    let slurl = st.slurl.as_str();
     let Some(text) = panels.nav_edit.as_mut() else {
         // exactly the text width (truncated when too long): the maturity badge
         // stays right after the location
@@ -1606,7 +1630,23 @@ fn location_field(ui: &mut egui::Ui, p: &Palette, panels: &mut Panels, loc: &str
             panels.nav_edit = Some(slurl.to_owned());
             panels.nav_edit_new = true;
         }
+        // AURORA_DEMO_BARS=legacy,locations: a place being typed
+        if demo::get().locations && ui.ctx().cumulative_frame_nr() == location_suggest::DEMO_FRAME {
+            panels.nav_edit = Some(location_suggest::DEMO_TYPED.to_owned());
+            panels.nav_edit_new = true;
+        }
         return None;
+    };
+    // the landmarks and places the typed text names: none for the SLURL
+    // the field opens with, nor with the location hidden
+    let (list_id, picker_key) = (id.with("suggestions"), id.with("picker"));
+    let mut picker = location_suggest::Picker::load(ui.ctx(), picker_key);
+    picker.refresh(&st.landmarks, st.tp_session.items, text, !st.location_hidden && *text != slurl);
+    // the arrows and Enter go to the list before the field takes them
+    let (mut take, moved) = if !panels.nav_edit_new && ui.memory(|m| m.has_focus(id)) {
+        picker.keys(ui, id)
+    } else {
+        (None, false)
     };
     let resp = ui.add(
         egui::TextEdit::singleline(text)
@@ -1634,6 +1674,24 @@ fn location_field(ui: &mut egui::Ui, p: &Palette, panels: &mut Panels, loc: &str
         ui.ctx().request_repaint();
         return None;
     }
+    picker.refresh(&st.landmarks, st.tp_session.items, text, !st.location_hidden && *text != slurl);
+    if !picker.list().is_empty()
+        && let Some(i) = location_suggest::list_area(ui, p, list_id, resp.rect, picker.list(), picker.chosen(), moved)
+    {
+        take = picker.list().get(i).cloned();
+    }
+    let has_list = !picker.list().is_empty();
+    picker.store(ui.ctx(), picker_key);
+    if let Some(s) = take {
+        panels.nav_edit = None;
+        ui.memory_mut(|m| m.surrender_focus(id));
+        return Some(s.action());
+    }
+    // a press on the list takes the field's focus: the list stays until
+    // the click lands on a row
+    let on_list = has_list
+        && ui.ctx().pointer_interact_pos().and_then(|pos| ui.ctx().layer_id_at(pos))
+            == Some(egui::LayerId::new(egui::Order::Foreground, list_id));
     let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
     let escape = ui.input(|i| i.key_pressed(egui::Key::Escape));
     if enter {
@@ -1642,7 +1700,7 @@ fn location_field(ui: &mut egui::Ui, p: &Palette, panels: &mut Panels, loc: &str
         if !typed.trim().is_empty() {
             return Some(BarAction::TeleportTo(typed));
         }
-    } else if escape || !resp.has_focus() {
+    } else if escape || (!resp.has_focus() && !on_list) {
         // Escape or a click elsewhere: back to the location as it was
         panels.nav_edit = None;
         ui.memory_mut(|m| m.surrender_focus(id));
@@ -1899,7 +1957,7 @@ pub fn top_bars(
                                 };
                                 let w = (ui.available_width() - 24.0 - STAR_W - icons_w).max(40.0);
                                 ui.allocate_ui(Vec2::new(w, 18.0), |ui| {
-                                    if let Some(a) = location_field(ui, p, panels, &loc, &st.slurl, w) {
+                                    if let Some(a) = location_field(ui, p, panels, st, &loc, w) {
                                         action = a;
                                     }
                                 });
@@ -1956,6 +2014,7 @@ pub fn run_command(ctx: &egui::Context, cmd: &str, panels: &mut Panels) -> BarAc
         "areasearch" => toggle(super::area_search::WINDOW, &mut panels.area_search),
         "soundexplorer" => toggle(super::sound_explorer::WINDOW, &mut panels.sound_explorer),
         "assetblacklist" => toggle(super::blacklist::WINDOW, &mut panels.asset_blacklist),
+        "group_titles" => toggle(super::group_titles::WINDOW, &mut panels.group_titles),
         "gridstatus" => toggle(super::grid_status::WINDOW, &mut panels.grid_status),
         "performance" => toggle("perf", &mut panels.perf),
         "snapshot" => toggle(super::snapshot::WINDOW, &mut panels.snapshot),
@@ -1998,6 +2057,7 @@ pub fn run_command(ctx: &egui::Context, cmd: &str, panels: &mut Panels) -> BarAc
         "marketplacelistings" => return BarAction::MarketplaceListings,
         "stop_animations" => return BarAction::StopAnimations,
         "resync_animations" => return BarAction::ResyncAnimations,
+        "vr_view" => return BarAction::ToggleVr,
         "immersive" => return BarAction::ToggleImmersive,
         _ => {}
     }
@@ -2025,6 +2085,7 @@ fn command_active(cmd: &str, panels: &Panels, flying: bool, seated: bool, mousel
         "areasearch" => panels.area_search,
         "soundexplorer" => panels.sound_explorer,
         "assetblacklist" => panels.asset_blacklist,
+        "group_titles" => panels.group_titles,
         "gridstatus" => panels.grid_status,
         "performance" => panels.perf,
         "snapshot" => panels.snapshot,
@@ -2725,6 +2786,10 @@ pub(crate) fn toolbar_row(
             toolbar.movement_active
         } else if b.command == "water_walk" {
             toolbar.water_walk_active
+        } else if b.command == "vr_view" {
+            ui.ctx()
+                .data(|data| data.get_temp::<bool>(egui::Id::unique("vr-active")))
+                .unwrap_or(false)
         } else {
             command_active(&b.command, panels, row.flying, row.seated, row.mouselook)
         };
@@ -3426,6 +3491,7 @@ mod tests {
             ("areasearch", super::super::area_search::WINDOW, |p| p.area_search),
             ("soundexplorer", super::super::sound_explorer::WINDOW, |p| p.sound_explorer),
             ("assetblacklist", super::super::blacklist::WINDOW, |p| p.asset_blacklist),
+            ("group_titles", super::super::group_titles::WINDOW, |p| p.group_titles),
             ("gridstatus", super::super::grid_status::WINDOW, |p| p.grid_status),
         ] {
             run_command(&ctx, cmd, &mut panels);
