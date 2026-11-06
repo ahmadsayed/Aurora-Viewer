@@ -383,6 +383,7 @@ fn failed_compilation_does_not_request_a_save_of_unchanged_scripts() {
         result: Ok(aurora_net::scripts::ScriptSaved {
             asset: Uuid::nil(),
             compiled: false,
+            checked: true,
             errors: vec!["Synthetic compilation error".into()],
         }),
     });
@@ -825,6 +826,8 @@ fn portal_relay_accepts_only_the_exact_ready_worn_bridge_and_never_enters_chat()
     use aurora_net::bridge::portal::{Access, LIFETIME, Message, Portal};
     let mut sim = Simulator::new();
     sim.ready();
+    // The announcing resident is no friend: shown only when everyone's are.
+    sim.world.portal_sources = super::super::portals::Sources::Everyone;
     let NetEvent::Chat(mut chat) = sim.demo.query_handshake(&sim.bridge, &sim.world).expect("query hello") else {
         panic!("chat");
     };
@@ -1181,6 +1184,7 @@ fn an_early_hello_survives_the_upload_reply_and_boot_status_requires_the_exact_w
         result: Ok(aurora_net::scripts::ScriptSaved {
             asset: Uuid::new_v4(),
             compiled: true,
+            checked: true,
             errors: Vec::new(),
         }),
     });
@@ -2287,4 +2291,58 @@ fn bridge_script_installation_and_repair_use_the_current_active_group() {
         sim.ready();
         assert_eq!(sim.script_rez_groups, vec![(QUERY_NAME.into(), active)]);
     }
+}
+
+#[test]
+fn turning_the_bridge_off_unlocks_and_detaches_it_and_turning_it_on_wears_it_again() {
+    let mut sim = Simulator::new();
+    sim.ready();
+    let item = sim.bridge.item;
+    let hello = sim.demo.query_handshake(&sim.bridge, &sim.world).expect("query hello");
+    sim.bridge.set_enabled(false, sim.now);
+    assert!(
+        sim.bridge
+            .commands
+            .iter()
+            .any(|c| matches!(c, NetCommand::Bridge { command, .. } if !command.enabled)),
+        "the worn bridge is unlocked before it is taken off"
+    );
+    // The factory's save already detached and wore it once.
+    let detaches = sim.detaches + 1;
+    for _ in 0..20 {
+        sim.step();
+    }
+    assert_eq!(sim.detaches, detaches, "detached once");
+    assert!(sim.world.worn_attachment(&item).is_none());
+    assert!(!sim.bridge.ready() && !sim.bridge.user_detached);
+    assert_eq!(sim.bridge.query_state(sim.now), QueryState::Off);
+    assert_eq!(sim.bridge.diagnostic(), Some(aurora_i18n::tr!("bridge-disabled")));
+    assert!(sim.prefs.enabled, "the position lock selection is kept for the way back");
+    let before = sim.world.chat.len();
+    assert!(sim.bridge.receive(&mut sim.world, hello, sim.now, sim.now).is_none());
+    assert_eq!(sim.world.chat.len(), before, "a late hello stays out of chat");
+    assert_eq!(sim.bridge.query_state(sim.now), QueryState::Off);
+    // Repair and the features that retry a failed bridge leave it off.
+    sim.bridge.retry(sim.now);
+    let attaches = sim.attaches;
+    for _ in 0..40 {
+        sim.step();
+    }
+    assert_eq!((sim.attaches, sim.detaches), (attaches, detaches));
+    assert_eq!(sim.bridge.query_state(sim.now), QueryState::Off);
+    sim.bridge.set_enabled(true, sim.now);
+    sim.ready();
+    assert_eq!(sim.bridge.item, item, "the kept inventory item is worn again");
+    assert_eq!(sim.copies, 1);
+}
+
+#[test]
+fn a_bridge_turned_off_at_login_is_never_made() {
+    let mut sim = Simulator::new();
+    sim.bridge.set_enabled(false, sim.now);
+    for _ in 0..80 {
+        sim.step();
+    }
+    assert_eq!((sim.copies, sim.uploads, sim.attaches), (0, 0, 0));
+    assert!(sim.world.inventory.items.values().all(|i| i.name != NAME));
 }

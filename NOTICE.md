@@ -1,8 +1,17 @@
 # Notices — Aurora Viewer
 
+Copyright © 2026 the Aurora Viewer contributors (the authors in the project's
+Git history).
+
 Aurora Viewer is free software: you can redistribute it and/or modify it under
 the terms of the **GNU General Public License, version 3 or (at your option) any
-later version** (see [LICENSE](LICENSE)).
+later version** (see [LICENSE](LICENSE)). A modified version must keep these
+notices, including where the viewer shows them in its About window, and say
+that it was modified (sections 4 and 5 of the licence).
+
+The licence covers the code and the assets; it grants no right to the name
+"Aurora Viewer" or to the Aurora logo as trademarks. What a modified version may
+do with them is in [TRADEMARKS.md](TRADEMARKS.md).
 
 Aurora Viewer is not provided, endorsed or supported by Linden Research, Inc.
 ("Linden Lab") or The Phoenix Firestorm Project, Inc. Second Life® is a
@@ -57,6 +66,7 @@ GPL-3.0-or-later as described above.
 | MIT KEMAR HRTF measurements, diffuse-field equalized set — Copyright 1994 MIT Media Laboratory, by Bill Gardner and Keith Martin (https://sound.media.mit.edu/resources/KEMAR.html: "provided free with no restrictions on use, provided the authors are cited"); turned into minimum-phase filters by `scripts/generate-hrtf.py` (built into the executable; origin, citation and changes in [README.md](assets/hrtf/README.md)) | `assets/hrtf/kemar.bin` | Free use with credit to the authors (their terms, quoted in the README) |
 | HYG star database v4.4 — David Nash (astronexus, https://codeberg.org/astronexus/hyg); the stars of magnitude 6.5 and brighter, rounded to fixed point by `scripts/generate-star-catalog.py` (built into the executable; origin and changes in [README.md](assets/stars/README.md)) | `assets/stars/stars.bin` | CC BY-SA 4.0 ([LICENSE-HYG.md](assets/stars/LICENSE-HYG.md)); the derived table is shared under the same licence |
 | Aurora wolf logo and silhouette | `assets/branding/` | Part of Aurora Viewer, GPL-3.0-or-later |
+| Four modern native walk/run animations, Copyright Linden Research, Inc., unmodified from the Legacy Viewer's `indra/newview/app_settings/static_assets/` at revision `f9401764e4e98aa3800749044a152cb4dcf75437` (provenance in the directory's README) | `crates/aurora-viewer/assets/animations/locomotion/` (built into the executable) | Originally LGPL 2.1, distributed here under GPL-3.0-or-later as described above |
 | Photo filters of the Second Life viewer `indra/newview/app_settings/filters` (the 30 XML files unchanged, from the Legacy Viewer's sources at commit `8ffe7065`), made by Linden Lab | `crates/aurora-render/src/looks/legacy/` (built into the executable) | Originally LGPL 2.1, distributed here under GPL-3.0-or-later as described above |
 | LSL keyword names, signatures and help from Firestorm `indra/newview/app_settings/keywords_lsl_default.xml` | `crates/aurora-viewer/assets/lsl/keywords.json`, `reference.json` | Originally LGPL 2.1, distributed here under GPL-3.0-or-later as described above |
 | Windlight presets of Firestorm `indra/newview/app_settings/windlight` (`days`, `skies`, `water`; XML files unchanged, commit `c33bfee2`), made by Linden Lab and by Second Life residents for the Phoenix / Firestorm viewers (their names and tags are in the preset names); the files carry no notice of their own and are distributed in the Firestorm sources under its LGPL 2.1 (`LICENSE`, `doc/LICENSE-source.txt`) | `crates/aurora-viewer/assets/windlight/windlight.zip` (built into the executable) | Originally LGPL 2.1, distributed here under GPL-3.0-or-later as described above |

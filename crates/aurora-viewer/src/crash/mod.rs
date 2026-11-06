@@ -6,6 +6,8 @@
 //! asked for by default; the full diagnostics stay in the session folder.
 
 pub mod github;
+#[cfg(target_os = "linux")]
+mod linux;
 mod native;
 pub mod privacy;
 // Bug report form (disabled, see main.rs):
@@ -16,7 +18,11 @@ mod threads;
 mod watchdog;
 mod window;
 
-pub use watchdog::{State, note as note_state, watch_window};
+#[cfg(test)]
+pub(crate) use summary::state_value as summary_state_value;
+#[cfg(test)]
+pub(crate) use watchdog::WINDOW_STATES;
+pub use watchdog::{State, note as note_state, pumped, watch_window};
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -244,7 +250,24 @@ fn start_inner() -> anyhow::Result<()> {
             std::thread::sleep(Duration::from_millis(10));
         }
     }
+    note_vulkan_layers(&dir);
     Ok(())
+}
+
+/// The Vulkan layers on offer go to `vulkan-layers.txt` as soon as they are
+/// known, on a thread of their own: a crash while Vulkan starts, before any
+/// note of the state, is where the report needs them most (#2241).
+fn note_vulkan_layers(dir: &Path) {
+    let dir = dir.to_owned();
+    let spawned = std::thread::Builder::new().name("aurora-crash-facts".into()).spawn(move || {
+        let names = aurora_render::vulkan_layers::loaded_names();
+        if !names.is_empty() {
+            let _ = std::fs::write(dir.join("vulkan-layers.txt"), names.join(","));
+        }
+    });
+    if let Err(error) = spawned {
+        eprintln!("the Vulkan layers are not noted for a crash report: {error}");
+    }
 }
 
 pub fn update(theme: &crate::theme::Theme, settings: &crate::settings::Settings) {
@@ -301,7 +324,7 @@ pub fn failure(message: &str) {
 }
 
 /// The GPU has kept a frame for `seconds` while the window still answers:
-/// `gpu-stall.txt` (with the render thread's stack on Windows), so a
+/// `gpu-stall.txt` (with the render thread's stack on Windows and Linux), so a
 /// session ended now is reported as such. [`gpu_answered`] takes it back.
 pub fn gpu_stalled(seconds: u64) {
     if let Some(session) = SESSION.get() {
@@ -312,11 +335,80 @@ pub fn gpu_stalled(seconds: u64) {
 /// The GPU device is lost for good (app/gpu_stall.rs): the session, which
 /// ends now, is reported as such, with the safe graphics offered next.
 pub fn gpu_lost() {
+    mark_gpu_lost(b"");
+}
+
+/// A GPU device loss the viewer recovered from (app/gpu_recovery.rs), `ms`
+/// to its new window and renderer, `safe` with the safe graphics level: one
+/// line each in `gpu-recoveries.txt`, which the session's report counts if
+/// it ends badly later. The session goes on: nothing marks it failed.
+pub fn gpu_recovered(ms: u128, safe: bool) {
+    use std::io::Write;
+    let Some(session) = SESSION.get() else {
+        return;
+    };
+    let unix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(session.dir.join("gpu-recoveries.txt"));
+    if let Ok(mut file) = file {
+        let _ = writeln!(file, "{unix} {ms} {}", if safe { "safe" } else { "same" });
+    }
+}
+
+/// The text of `gpu-lost.txt` for a device lost before the first frame.
+const GPU_LOST_AT_START: &str = "start";
+
+/// The same before the first frame (app.rs): reported under its own title,
+/// apart from the driver resets of a running session.
+pub fn gpu_lost_at_start() {
+    mark_gpu_lost(GPU_LOST_AT_START.as_bytes());
+}
+
+fn mark_gpu_lost(when: &[u8]) {
     if let Some(session) = SESSION.get() {
-        let _ = std::fs::write(session.dir.join("gpu-lost.txt"), []);
+        let _ = std::fs::write(session.dir.join("gpu-lost.txt"), when);
         let _ = std::fs::write(session.dir.join("failed"), []);
         ending_in_gpu_trouble(&session.dir);
     }
+}
+
+/// In the session folder while the photo window's "Photo quality" holds
+/// every graphics setting at its maximum (app/snapshot.rs).
+const PHOTO_QUALITY_ON: &str = "photo-quality";
+/// Left in the crash root when a session ended badly with it on: the next
+/// launch turns the switch off once ([`take_photo_quality_crash`]). A modest
+/// PC that crashes or freezes with the boost would otherwise do it again at
+/// every opening of the photo window, and the switch is only in there.
+const PHOTO_QUALITY_CRASH: &str = "photo-quality-crash";
+
+/// The photo quality raises the graphics (`on`) or gives the user's back.
+pub fn photo_quality(on: bool) {
+    if let Some(session) = SESSION.get() {
+        let path = session.dir.join(PHOTO_QUALITY_ON);
+        if on {
+            let _ = std::fs::write(path, []);
+        } else {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+fn note_photo_quality(dir: &Path) {
+    if dir.join(PHOTO_QUALITY_ON).exists()
+        && let Some(root) = dir.parent()
+    {
+        let _ = std::fs::write(root.join(PHOTO_QUALITY_CRASH), []);
+    }
+}
+
+/// The last session that ended badly had the photo quality on: true once,
+/// then the mark is gone. Read after [`start`], like [`take_gpu_trouble`].
+pub fn take_photo_quality_crash() -> bool {
+    std::fs::remove_file(root().join(PHOTO_QUALITY_CRASH)).is_ok()
 }
 
 /// A known overlay hook arrived in the process (overlay_hooks.rs): its file
@@ -344,6 +436,10 @@ pub fn gpu_closed() {
 }
 
 pub fn gpu_answered() {
+    // first, so that a stall's stacks still being read do not bring the
+    // file back once it is removed
+    #[cfg(target_os = "linux")]
+    watchdog::gpu_answered();
     if let Some(session) = SESSION.get() {
         let _ = std::fs::remove_file(session.dir.join("gpu-stall.txt"));
     }
@@ -405,6 +501,7 @@ fn preserve(dir: &Path, exit_code: u32) -> anyhow::Result<()> {
             .to_string(),
     )?;
     note_gpu_trouble(dir);
+    note_photo_quality(dir);
     Ok(())
 }
 
@@ -446,6 +543,7 @@ fn recover_in(root: &Path, mut show: impl FnMut(&Path)) {
         {
             // Its watcher died with it: nobody marked it at its end.
             note_gpu_trouble(&dir);
+            note_photo_quality(&dir);
             show(&dir);
         }
     }
@@ -757,6 +855,28 @@ mod tests {
         shown.clear();
         recover_in(&root, |dir| shown.push(dir.to_owned()));
         assert!(shown.is_empty());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// A crashed session with the photo quality on marks the root once; a
+    /// crashed one without it, or one closed normally with it, does not.
+    #[cfg(any(windows, target_os = "linux"))]
+    #[test]
+    fn a_crash_with_the_photo_quality_on_is_marked_for_the_next_launch() {
+        let root = scratch_root();
+        let mark = root.join(PHOTO_QUALITY_CRASH);
+        test_session(&root, std::process::id(), 1, &["normal", PHOTO_QUALITY_ON]);
+        test_session(&root, std::process::id(), 1, &["failed"]);
+        recover_in(&root, |_| {});
+        assert!(!mark.exists());
+        test_session(&root, std::process::id(), 1, &[PHOTO_QUALITY_ON]);
+        recover_in(&root, |_| {});
+        assert!(mark.exists());
+        // the Windows watcher's own note, at the end of the session
+        std::fs::remove_file(&mark).unwrap();
+        let watched = test_session(&root, std::process::id(), 1, &[PHOTO_QUALITY_ON]);
+        preserve(&watched, 0xC0000005).unwrap();
+        assert!(mark.exists());
         std::fs::remove_dir_all(root).unwrap();
     }
 

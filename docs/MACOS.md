@@ -9,7 +9,10 @@ nothing else to install. macOS support is new: tell us what does not work
 
 - A Mac with Apple Silicon (M1, M2, M3, M4 or later). Intel Macs are not
   supported.
-- macOS 12 Monterey or later.
+- macOS 13 Ventura or later. The renderer draws every texture through
+  Metal 3, which Apple ships from macOS 13 on: on macOS 12 Monterey the
+  viewer cannot start, even on Apple Silicon. Every Apple Silicon Mac can
+  be updated to a newer macOS, free of charge.
 
 ## 1. Download and install
 
@@ -46,6 +49,23 @@ choose **Always Allow**) and the microphone.
 The first time voice chat opens the microphone, macOS asks whether Aurora
 Viewer may use it: allow it to speak in voice chat (you can change it later
 in **System Settings › Privacy & Security › Microphone**).
+
+## Game Mode
+
+Aurora Viewer declares itself as a game to macOS, so macOS turns on its
+Game Mode automatically when the viewer is in native full screen on Apple
+Silicon with macOS 14 Sonoma or later. To enter full screen, move the
+pointer over the green button in the title bar and choose **Enter Full
+Screen**; maximizing the window (double-clicking the title bar, or the
+**Zoom** command) does not enter full screen. The Game Mode notice and the
+game controller icon in the menu bar confirm that it is on; the icon's menu
+also turns it off for the game. Game Mode gives the viewer priority over
+background work and lowers the latency of Bluetooth controllers and
+headphones.
+
+Game Mode belongs to the installed application: running a bare
+`aurora-viewer` executable from a terminal has no application bundle, so
+macOS cannot offer it there.
 
 ## Keyboard
 

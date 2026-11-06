@@ -432,6 +432,9 @@ pub struct Settings {
     pub language: String,
     /// Firestorm LanguageIsPublic, exposed through llGetAgentLanguage.
     pub language_is_public: bool,
+    /// The Legacy Viewer's FSBrowserHomePage: the page the built-in web browser (toolbar
+    /// button) opens on (Preferences › Network and cache).
+    pub browser_home_page: String,
     /// Alpha feedback shortcut; Help and login remain available.
     pub show_bug_report: bool,
     /// ShowHUDAttachments, enabled by default in Firestorm.
@@ -480,6 +483,9 @@ pub struct Settings {
     /// Requested position lock and options, independent for each avatar.
     pub bridge: std::collections::HashMap<uuid::Uuid, crate::world::bridge::Preferences>,
     pub movements: std::collections::HashMap<uuid::Uuid, crate::movement::Preferences>,
+    /// Show Friends Only and keeping it after a teleport, for each account
+    /// (FSRenderFriendsOnly, FSRenderFriendsOnlyPersistsTP: per-account settings).
+    pub friends_only: std::collections::HashMap<uuid::Uuid, crate::world::friends_only::Preferences>,
     /// Photo window (Firestorm's snapshot floater settings).
     pub snapshot: crate::snapshot::Settings,
     /// Depth of field (Preferences › Graphics).
@@ -556,6 +562,10 @@ pub struct Settings {
     /// Texture memory sized from the detected video memory (else `texture_budget_mb`).
     pub texture_budget_auto: bool,
     pub texture_budget_mb: u32,
+    /// The largest side, in pixels, ordinary world textures are loaded at
+    /// (the Legacy Viewer's RenderMaxTextureResolution: 512, 1024 or 2048,
+    /// 2048 by default): `TextureStreamer::max_resolution`.
+    pub max_texture_resolution: u32,
     pub ui_scale: f32,
     /// Firestorm UsePieMenu. Keep Aurora's existing list menu by default.
     pub use_pie_menu: bool,
@@ -597,6 +607,11 @@ pub struct Settings {
     /// box "Do not show again" of the confirmation turns it off). Firestorm
     /// keeps one "ignore" per notification: one setting here for the three.
     pub confirm_teleports: bool,
+    /// Ask before a Hypergrid teleport that leaves worn items behind: with
+    /// OpenSim's suitcase, another grid loads only what is in My Suitcase
+    /// (`world::suitcase`). Not a Legacy Viewer setting; its box "Do not
+    /// show again" turns it off.
+    pub warn_hypergrid_suitcase: bool,
     /// SettingsMakeNoTrans is asked (its "ignore" box turns it off; shown
     /// by default like the notification).
     pub confirm_no_transfer_settings: bool,
@@ -609,6 +624,17 @@ pub struct Settings {
     pub confirm_return_to_owner: bool,
     pub confirm_attachment_drop: bool,
     pub confirm_script_modify: bool,
+    /// The Marketplace listings ask before a move from the inventory
+    /// (ConfirmMerchantMoveInventory), a change to an active listing
+    /// (ConfirmMerchantActiveChange), a version folder leaving its place
+    /// (ConfirmMerchantClearVersion), a listing folder moved or deleted
+    /// (ConfirmListingCutOrDelete) and an unlist (ConfirmMerchantUnlist);
+    /// their "ignore" boxes turn these off. All on by default.
+    pub confirm_merchant_move: bool,
+    pub confirm_merchant_active_change: bool,
+    pub confirm_merchant_clear_version: bool,
+    pub confirm_merchant_listing_delete: bool,
+    pub confirm_merchant_unlist: bool,
     /// RegionCheckTextureHeights: Region / Estate asks before sending
     /// elevation ranges whose low end is above the high one ("Don't ask"
     /// turns it off; on by default).
@@ -652,6 +678,8 @@ pub struct Settings {
     pub window_x: Option<i32>,
     pub window_y: Option<i32>,
     pub window_maximized: bool,
+    /// Start in a borderless window covering the current monitor.
+    pub window_fullscreen: bool,
     /// Legacy single-account authorization, read once for migration only.
     #[serde(skip_serializing)]
     pub mfa_hash: String,
@@ -663,7 +691,15 @@ pub struct Settings {
     /// the chat fields. A multiplier in the limits of the interface's text
     /// size rather than the Legacy Viewer's four steps.
     pub chat_font_scale: f32,
-    pub chat_timestamps: bool,
+    /// The times of the nearby chat's lines and of its cards over the world
+    /// (FSShowTimestampsNearbyChat, on; Preferences › Chat › Nearby chat).
+    pub chat_timestamps_nearby: bool,
+    /// The times of the conversations' lines, private and group
+    /// (FSShowTimestampsIM, on; Preferences › Chat › Conversations).
+    pub chat_timestamps_im: bool,
+    /// The former single switch, read once: its choice goes to both.
+    #[serde(rename = "chat_timestamps", skip_serializing)]
+    pub(crate) former_chat_timestamps: Option<bool>,
     /// The channel selector of the nearby chat's field (FSShowChatChannel,
     /// off by default; Preferences > Chat). "/n" before the text works
     /// without it.
@@ -756,6 +792,13 @@ pub struct Settings {
     /// closed (FSNotifyNearbyChatFlash, on); the button's right-click menu
     /// turns it off, IMs and group chats keep flashing.
     pub flash_conversations_nearby: bool,
+    /// A resident starting to type an IM to us, with no conversation open
+    /// yet, opens it with "Incoming message from <name>"
+    /// (FSAnnounceIncomingIM, off).
+    pub announce_incoming_im: bool,
+    /// "(<unread>) " before the window title while IMs, group chats or
+    /// conferences wait unread (FSShowMessageCountInWindowTitle, off).
+    pub unread_ims_in_window_title: bool,
     /// The thumbnails of the open conversations, with their unread count
     /// (the Legacy Viewer's IM chiclets, #1134): where, or none.
     pub chat_thumbnails: ChatThumbnails,
@@ -815,6 +858,10 @@ pub struct Settings {
     pub log_show_history: bool,
     /// Date in the names of these files (LogFileNamewithDate, off).
     pub log_dated_names: bool,
+    /// Import the Legacy Viewer's transcripts at each login. On by default
+    /// (an Aurora addition): moving between the two viewers keeps the
+    /// history, and a notice says what came in.
+    pub log_import_at_login: bool,
     /// Ask before opening a web link outside the trusted domains (the box
     /// "Do not warn me again" of the warning turns it off).
     pub warn_external_links: bool,
@@ -980,6 +1027,12 @@ pub struct Settings {
     /// elapsed time, including late loading and edit release. Off by default:
     /// the Legacy Viewer starts at asset activation and suspends during edits.
     pub synchronize_animations: bool,
+    /// Preferences › Aurora › Behavior: make, wear and use the Aurora bridge
+    /// (`world/bridge.rs`). On by default, as the Legacy Viewer's UseLSLBridge.
+    pub use_bridge: bool,
+    /// Preferences › Aurora › Behavior: whose portals the bridge shows. Friends
+    /// by default; our own portals and returns are always shown.
+    pub portal_sources: crate::world::portals::Sources,
     /// Experimental filing of new deliveries by the sender's legacy name.
     pub sort_received_items: bool,
     pub received_items_since: i64,
@@ -1113,6 +1166,10 @@ pub struct Settings {
     /// Quickjump: jump and land without waiting for the pre-jump and landing
     /// animations (FSIgnoreFinishAnimation, off; Me › Quickjump too).
     pub quickjump: bool,
+    /// The fly override's caution was shown (the Legacy Viewer's
+    /// FirstUseFlyOverride notification, once ever). The override itself is
+    /// never saved (`World::fly_override`).
+    pub fly_override_warned: bool,
     /// A left click on an object whose click action is Sit does not sit
     /// (FSBlockClickSit, off); the menu's Sit still does.
     pub block_click_sit: bool,
@@ -1132,9 +1189,11 @@ pub struct Settings {
     pub(crate) former_look_at_range: Option<f32>,
     /// 0 off, 1 low, 2 medium, 3 high, 4 ultra
     pub shadow_quality: u8,
-    /// The two projectors that weigh most on screen cast shadows
-    /// (Firestorm RenderShadowDetail 2, "Sun/Moon + Projectors", its default).
+    /// Projectors cast shadows within the configured budget
+    /// (Legacy Viewer RenderShadowDetail 2, "Sun/Moon + Projectors").
     pub projector_shadows: bool,
+    /// Maximum simultaneous projector shadows, independent of local-light count.
+    pub projector_shadow_limit: u8,
     /// Screen-space contact shadows of the sun or the moon, beyond the
     /// Legacy Viewer (contact_shadows.rs): what the shadow map is too coarse
     /// to show, where things touch. Off by default; only with the shadows.
@@ -1180,6 +1239,11 @@ pub struct Settings {
     /// Firestorm yields BackgroundYieldTime every frame in the background).
     pub background_fps_cap: bool,
     pub background_fps_limit: u32,
+    /// A window behind whose GPU frames crawl (another program in front
+    /// keeps the card busy) stops drawing its 3D until it has the focus
+    /// again, before Windows resets the card (app/busy_pause.rs). On by
+    /// default; not in the Legacy Viewer.
+    pub background_gpu_pause: bool,
     /// Maximum live particles (0 = particles off).
     pub max_particles: u32,
     /// Avatars drawn (the nearest ones).
@@ -1350,7 +1414,23 @@ pub(crate) const TONEMAP_MIX: f32 = 0.7;
 /// an S32 of seconds).
 pub(crate) const GROUP_SNOOZE_MAX_MINUTES: u32 = i32::MAX as u32 / 60;
 
-const SETTINGS_VERSION: u32 = 30;
+/// RenderMaxTextureResolution's default and top (settings.xml,
+/// MAX_IMAGE_SIZE_DEFAULT), and the choices of its dropdown
+/// (panel_preferences_graphics1.xml).
+pub(crate) const MAX_TEXTURE_RESOLUTION: u32 = 2048;
+pub(crate) const MAX_TEXTURE_RESOLUTIONS: [u32; 3] = [512, 1024, MAX_TEXTURE_RESOLUTION];
+
+/// A maximum texture resolution as one of the dropdown's choices, never
+/// above what was asked (the Legacy Viewer clamps it to 512..2048).
+pub(crate) fn max_texture_resolution_choice(v: u32) -> u32 {
+    MAX_TEXTURE_RESOLUTIONS
+        .into_iter()
+        .rev()
+        .find(|&c| c <= v)
+        .unwrap_or(MAX_TEXTURE_RESOLUTIONS[0])
+}
+
+const SETTINGS_VERSION: u32 = 31;
 
 /// `settings.json` from a newer build: the document, what this build loaded
 /// from it, and the top-level keys to leave as they were unless changed here
@@ -1663,6 +1743,7 @@ impl Default for Settings {
             crash_reports: CrashReports::Ask,
             language: "default".into(),
             language_is_public: true,
+            browser_home_page: crate::ui::web_browser::DEFAULT_HOME.into(),
             show_bug_report: true,
             show_huds: true,
             sun_beacon: false,
@@ -1721,6 +1802,7 @@ impl Default for Settings {
             lod_factor: 2.0,
             texture_budget_auto: true,
             texture_budget_mb: 1536,
+            max_texture_resolution: MAX_TEXTURE_RESOLUTION,
             ui_scale: 1.0,
             use_pie_menu: false,
             world_context_menus: Default::default(),
@@ -1744,11 +1826,17 @@ impl Default for Settings {
             inspect_columns: crate::ui::inspect::ALL_COLUMNS,
             landmarks_by_date: true,
             confirm_teleports: true,
+            warn_hypergrid_suitcase: true,
             confirm_no_transfer_settings: true,
             confirm_object_bonus: true,
             confirm_return_to_owner: true,
             confirm_attachment_drop: true,
             confirm_script_modify: true,
+            confirm_merchant_move: true,
+            confirm_merchant_active_change: true,
+            confirm_merchant_clear_version: true,
+            confirm_merchant_listing_delete: true,
+            confirm_merchant_unlist: true,
             region_check_texture_heights: true,
             confirm_payments: true,
             payment_confirm_threshold: 200,
@@ -1766,6 +1854,7 @@ impl Default for Settings {
             ao: Default::default(),
             bridge: Default::default(),
             movements: Default::default(),
+            friends_only: Default::default(),
             snapshot: Default::default(),
             dof: Default::default(),
             loading_backdrop: true,
@@ -1775,11 +1864,14 @@ impl Default for Settings {
             window_x: None,
             window_y: None,
             window_maximized: false,
+            window_fullscreen: false,
             mfa_hash: String::new(),
             font: crate::ui::fonts::DEFAULT.into(),
             font_scale: 1.0,
             chat_font_scale: 1.0,
-            chat_timestamps: true,
+            chat_timestamps_nearby: true,
+            chat_timestamps_im: true,
+            former_chat_timestamps: None,
             show_chat_channel: false,
             script_errors_in_chat: true,
             script_errors_to_channel: false,
@@ -1806,6 +1898,8 @@ impl Default for Settings {
             flash_unread_conversations: true,
             flash_conversations_button: true,
             flash_conversations_nearby: true,
+            announce_incoming_im: false,
+            unread_ims_in_window_title: false,
             chat_thumbnails: ChatThumbnails::ChatBar,
             chat_thumbnails_flash: true,
             flash_on_message: true,
@@ -1828,6 +1922,7 @@ impl Default for Settings {
             reopen_ims: false,
             log_show_history: true,
             log_dated_names: false,
+            log_import_at_login: true,
             warn_external_links: true,
             trusted_sites: Default::default(),
             mute_all_groups: false,
@@ -1882,6 +1977,8 @@ impl Default for Settings {
             classic_hover_tips: false,
             predict_own_motion: false,
             synchronize_animations: false,
+            use_bridge: true,
+            portal_sources: Default::default(),
             sort_received_items: false,
             received_items_since: 0,
             notify_deliveries: true,
@@ -1934,6 +2031,7 @@ impl Default for Settings {
             fly_after_teleport: false,
             crouch_toggle: false,
             quickjump: false,
+            fly_override_warned: false,
             block_click_sit: false,
             double_click: crate::autopilot::DoubleClick::Nothing,
             follow: Default::default(),
@@ -1942,6 +2040,7 @@ impl Default for Settings {
             former_look_at_range: None,
             shadow_quality: 3,
             projector_shadows: true,
+            projector_shadow_limit: 2,
             contact_shadows: false,
             antialiasing: 6,
             render_scale_percent: 100,
@@ -1956,6 +2055,7 @@ impl Default for Settings {
             graphics_saved_active: None,
             background_fps_cap: true,
             background_fps_limit: 15,
+            background_gpu_pause: true,
             max_particles: 4096,
             max_avatars: 16,
             ssao: 1,
@@ -2098,6 +2198,15 @@ pub fn cache_dir() -> PathBuf {
         return for_mode(chosen.to_path_buf());
     }
     for_mode(default_cache_root())
+}
+
+/// The folder of the sealed asset cache (cache.rs), inside [`cache_dir`].
+/// A folder of its own: the earlier versions keep files of another format
+/// right in [`cache_dir`], so that one never reads the other's files.
+pub const ASSET_STORE: &str = "store";
+
+pub fn asset_cache_dir() -> PathBuf {
+    cache_dir().join(ASSET_STORE)
 }
 
 pub(crate) fn default_cache_root() -> PathBuf {
@@ -2286,6 +2395,10 @@ impl Settings {
             profile.locked = true;
         }
         self.grids.retain_mut(|grid| grid.validate().is_ok());
+        if let Some(on) = self.former_chat_timestamps.take() {
+            self.chat_timestamps_nearby = on;
+            self.chat_timestamps_im = on;
+        }
         if std::mem::take(&mut self.former_hide_own_group_title) {
             self.group_titles = crate::world::names::GroupTitles::AllExceptMine;
         }
@@ -2489,6 +2602,12 @@ impl Settings {
             // below. Every earlier file wrote the former default, off
             self.build.limit_select_distance = true;
         }
+        if self.settings_version < 31 {
+            // the levels now set the maximum texture resolution: a profile
+            // still exactly on Potato or Low takes theirs (512 and 1024),
+            // any other keeps 2048
+            crate::graphics_presets::upgrade_max_texture_resolution(&mut self);
+        }
         if !self.audio.mic_gain.is_finite() {
             self.audio.mic_gain = 1.0;
         }
@@ -2528,6 +2647,7 @@ impl Settings {
             8..=15 => 8,
             _ => 16,
         };
+        self.max_texture_resolution = max_texture_resolution_choice(self.max_texture_resolution);
         self.cache_size_mb = self.cache_size_mb.clamp(512, 65536);
         self.bandwidth_kbps = self.bandwidth_kbps.clamp(50, aurora_net::throttle::DEFAULT_KBPS as u32);
         if !self.chat_bar_width.is_finite() || self.chat_bar_width < 0.0 {
@@ -2578,6 +2698,9 @@ impl Settings {
             HoverTips::default().delay
         };
         self.shadow_quality = self.shadow_quality.min(4);
+        self.projector_shadow_limit = self
+            .projector_shadow_limit
+            .clamp(1, aurora_render::projector_shadows::MAX_PROJECTOR_SHADOWS as u8);
         self.antialiasing = self.antialiasing.min(6);
         self.render_scale_percent = self.render_scale_percent.clamp(50, 100);
         self.reflection_probes = self.reflection_probes.min(3);
@@ -2640,6 +2763,7 @@ impl Settings {
             window_x: old.window_x,
             window_y: old.window_y,
             window_maximized: old.window_maximized,
+            window_fullscreen: old.window_fullscreen,
             // a newer build's own values are not this build's to reset
             newer_file: old.newer_file,
             // Named profiles are user content, like separate preset files.
@@ -2773,6 +2897,7 @@ impl Settings {
             },
             hdr: self.hdr_emissive,
             shadow_resolution: self.shadow_params().0,
+            projector_shadow_limit: if self.projector_shadows { self.projector_shadow_limit } else { 0 },
             ssao: self.ssao,
             ao_method: if self.ao_method == 1 {
                 AoMethod::Gtao {
@@ -2949,6 +3074,41 @@ impl WaterEffectsSettings {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn projector_shadow_budget_survives_restart_and_clamps_untrusted_values() {
+        use super::Settings;
+        let old: Settings = serde_json::from_str("{}").expect("old preferences");
+        assert_eq!(old.projector_shadow_limit, 2);
+        for (requested, expected) in [(0, 1), (2, 2), (10, 10), (255, 16)] {
+            let settings = Settings {
+                projector_shadow_limit: requested,
+                ..Settings::default()
+            }
+            .sanitized();
+            let bytes = serde_json::to_vec(&settings).expect("save preferences");
+            let restored: Settings = serde_json::from_slice(&bytes).expect("restore preferences");
+            assert_eq!(restored.projector_shadow_limit, expected);
+            assert_eq!(restored.render_settings().projector_shadow_limit, expected);
+        }
+        let disabled = Settings {
+            projector_shadows: false,
+            projector_shadow_limit: 10,
+            ..Settings::default()
+        };
+        assert_eq!(disabled.render_settings().projector_shadow_limit, 0);
+    }
+
+    #[test]
+    fn legacy_chat_import_at_login_defaults_on_and_keeps_a_saved_off() {
+        use super::Settings;
+        assert!(Settings::default().log_import_at_login);
+        // preferences saved before the setting existed
+        let old: Settings = serde_json::from_str("{}").expect("older preferences");
+        assert!(old.log_import_at_login);
+        let off: Settings = serde_json::from_str(r#"{"log_import_at_login":false}"#).expect("preferences");
+        assert!(!off.log_import_at_login);
+    }
+
+    #[test]
     fn auto_accept_inventory_defaults_off_and_preserves_saved_choices() {
         assert!(!super::Settings::default().auto_accept_inventory);
         let old: super::Settings = serde_json::from_str("{}").expect("older preferences");
@@ -3075,6 +3235,33 @@ mod tests {
                 assert_eq!(reloaded.sanitized().group_titles, expected);
             }
         }
+    }
+
+    #[test]
+    fn the_former_show_time_switch_goes_to_both_and_is_not_saved_again() {
+        let fresh: super::Settings = serde_json::from_str("{}").expect("fresh settings");
+        let fresh = fresh.sanitized();
+        assert!(
+            fresh.chat_timestamps_nearby && fresh.chat_timestamps_im,
+            "on by default, as in the Legacy Viewer"
+        );
+        for on in [false, true] {
+            let old: super::Settings = serde_json::from_value(serde_json::json!({ "chat_timestamps": on })).expect("former show time");
+            let migrated = old.sanitized();
+            assert_eq!((migrated.chat_timestamps_nearby, migrated.chat_timestamps_im), (on, on));
+            let saved = serde_json::to_value(&migrated).expect("save show time");
+            assert!(saved.get("chat_timestamps").is_none(), "only the two switches are saved");
+            let reloaded: super::Settings = serde_json::from_value(saved).expect("reload show time");
+            assert_eq!((reloaded.chat_timestamps_nearby, reloaded.chat_timestamps_im), (on, on));
+        }
+        // the two switches apart survive a reload
+        let apart: super::Settings = serde_json::from_value(serde_json::json!({
+            "chat_timestamps_nearby": false,
+            "chat_timestamps_im": true,
+        }))
+        .expect("separate switches");
+        let apart = apart.sanitized();
+        assert_eq!((apart.chat_timestamps_nearby, apart.chat_timestamps_im), (false, true));
     }
 
     #[test]
@@ -3738,6 +3925,23 @@ mod tests {
         left.window_maximized = true;
         let json = serde_json::to_string(&left).expect("serialize synthetic settings");
         assert_eq!(state(&json), (true, false));
+    }
+
+    #[test]
+    fn borderless_fullscreen_defaults_off_and_round_trips() {
+        let defaults = Settings::default();
+        assert!(!defaults.window_fullscreen);
+
+        let path = scratch_settings_file();
+        let settings = Settings {
+            window_fullscreen: true,
+            ..defaults
+        };
+        settings.save_to(&path);
+        let loaded = Settings::load_from(&path);
+
+        assert!(loaded.window_fullscreen);
+        let _ = std::fs::remove_dir_all(path.parent().expect("settings directory"));
     }
 
     #[test]

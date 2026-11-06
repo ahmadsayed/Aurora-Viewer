@@ -37,6 +37,8 @@ pub mod aa_switch;
 /// Help › About Aurora Viewer on one of its tabs (AURORA_DEMO_ABOUT).
 #[path = "demo_about.rs"]
 pub mod about;
+#[path = "demo_alpha_mask_ab.rs"]
+pub mod alpha_mask_ab;
 /// AURORA_DEMO_ARRIVAL: an arrival in a busy region, every asset downloaded.
 #[path = "demo_arrival.rs"]
 pub mod arrival;
@@ -93,6 +95,8 @@ pub mod env;
 /// (AURORA_DEMO_EXPERIENCE).
 #[path = "demo_experience.rs"]
 pub mod experience;
+#[path = "demo_floating_text.rs"]
+pub mod floating_text;
 /// A prop derezzed and particles started while the photo mode holds the
 /// world still (AURORA_DEMO_FREEZE_WORLD).
 #[path = "demo_freeze_world.rs"]
@@ -130,6 +134,10 @@ pub mod home;
 pub mod hover_tips;
 #[path = "demo_hud.rs"]
 pub mod hud;
+/// IMs announced as their sender starts typing, and the unread count in
+/// the window title (AURORA_DEMO_IM_ANNOUNCE).
+#[path = "demo_im_announce.rs"]
+pub mod im_announce;
 /// Keyword alerts on lines of every kind (AURORA_DEMO_KEYWORDS).
 #[path = "demo_keywords.rs"]
 pub mod keywords;
@@ -158,6 +166,9 @@ pub mod object_im;
 /// The object menu scenario's objects (AURORA_DEMO_OBJECT_MENU).
 #[path = "demo_object_menu.rs"]
 pub mod object_menu;
+/// Boxes for the build tools' snap to objects (AURORA_DEMO_OBJECT_SNAP).
+#[path = "demo_object_snap.rs"]
+pub mod object_snap;
 /// AURORA_DEMO_OUTFIT_RESTORE: the login restore of the outfit against a
 /// region that puts part of it back by itself.
 #[path = "demo_outfit_restore.rs"]
@@ -227,6 +238,9 @@ pub mod sound_parcels;
 /// reverb of the surroundings (AURORA_DEMO_SOUND_REVERB).
 #[path = "demo_sound_reverb.rs"]
 pub mod sound_reverb;
+/// The files the scenarios take from a folder, and which ones a build reads.
+#[path = "demo_source.rs"]
+pub mod source;
 /// The Aurora team's marks on demo residents (AURORA_DEMO_STAFF).
 #[path = "demo_staff.rs"]
 pub mod staff;
@@ -248,16 +262,26 @@ pub mod tangents;
 /// (AURORA_DEMO_TEXREFRESH).
 #[path = "demo_tex_refresh.rs"]
 pub mod tex_refresh;
+/// Boards with 2048 px streamed textures, tinted by the level shown, for
+/// the maximum texture resolution (AURORA_DEMO_TEXTURE_RES).
+#[path = "demo_texture_res.rs"]
+pub mod texture_res;
 /// Toasts of friends and messages, and the list under the bell
 /// (AURORA_DEMO_TOASTS).
 #[path = "demo_toasts.rs"]
 pub mod toasts;
+#[path = "demo_tortured_prims.rs"]
+pub mod tortured_prims;
 /// Translated private conversations (AURORA_DEMO_TRANSLATE).
 #[path = "demo_translate.rs"]
 pub mod translate;
 /// Fast camera turns (AURORA_DEMO_TURN).
 #[path = "demo_turn.rs"]
 pub mod turn;
+/// The Voice controls window with residents in the nearby channel
+/// (AURORA_DEMO_VOICE_CONTROLS).
+#[path = "demo_voice_controls.rs"]
+pub mod voice_controls;
 /// A worn object of ours (AURORA_DEMO_WORN).
 #[path = "demo_worn.rs"]
 pub mod worn;
@@ -506,7 +530,8 @@ fn fountain_particles() -> Vec<u8> {
 
 /// Leash script (legacy block): a ribbon chain dropped at the collar that
 /// steers towards `target` and sags under gravity, two links per burst. Its
-/// y scale is long because ribbons ignore it (#1049).
+/// y scale is long because ribbons ignore it (#1049); its texture runs
+/// along the chain, like leash textures do (#1924).
 fn leash_particles(target: Uuid) -> Vec<u8> {
     use aurora_prim::particles::*;
     let mut out = fountain_particles();
@@ -516,6 +541,7 @@ fn leash_particles(target: Uuid) -> Vec<u8> {
     out[15..17].copy_from_slice(&0u16.to_le_bytes()); // burst rate (clamped)
     out[23] = 2; // particles per burst
     out[34..36].copy_from_slice(&(((-1.0f32 + 256.0) * 128.0) as u16).to_le_bytes()); // gravity
+    out[36..52].copy_from_slice(TEX_LEASH_CHAIN.as_bytes());
     out[52..68].copy_from_slice(target.as_bytes());
     let part = PS_SYS_DATA_BLOCK_SIZE;
     let flags = LL_PART_RIBBON_MASK | LL_PART_FOLLOW_SRC_MASK | LL_PART_TARGET_POS_MASK | LL_PART_EMISSIVE_MASK;
@@ -2963,6 +2989,7 @@ pub fn demo_reply(cmd: &aurora_net::NetCommand) -> Vec<NetEvent> {
             // unblocked wearer.
             let text = if std::env::var_os("AURORA_DEMO_ANIMESH").is_some()
                 || std::env::var_os("AURORA_DEMO_DERENDER").is_some()
+                || std::env::var_os("AURORA_DEMO_FRIENDS_ONLY").is_some()
                 || seat_kill::on()
                 || std::env::var("AURORA_DEMO_WORLD_CLICKS").is_ok_and(|m| m.starts_with("worn-"))
                 || people::mode().is_some()
@@ -2972,8 +2999,16 @@ pub fn demo_reply(cmd: &aurora_net::NetCommand) -> Vec<NetEvent> {
             } else {
                 text
             };
+            // The restoration fixture needs both quiet groups open; the
+            // ordinary demo deliberately blocks the second group's chat.
+            let text = if chatlog::mode() == Some(chatlog::Mode::Restore) {
+                let blocked = crate::world::mutes::group_chat_name(&DEMO_GROUP2);
+                text.lines().filter(|line| !line.contains(&blocked)).collect::<Vec<_>>().join("\n")
+            } else {
+                text
+            };
             let text = text + &tags::mute_line().unwrap_or_default();
-            vec![NetEvent::MuteList(aurora_net::MuteListSource::File(text))]
+            chatlog::mute_list_reply(text)
         }
         // two groups, and someone starts a chat in the first one
         aurora_net::NetCommand::RequestGroups => {
@@ -3007,6 +3042,14 @@ pub fn demo_reply(cmd: &aurora_net::NetCommand) -> Vec<NetEvent> {
                     ..g(DEMO_GROUP3, aurora_i18n::tr!("common-plaza-market"), true)
                 },
             ];
+            // AURORA_DEMO_GROUPS=many: exercise the Conversations group
+            // picker with more entries than fit in its submenu.
+            if std::env::var("AURORA_DEMO_GROUPS").is_ok_and(|mode| mode == "many") {
+                groups.extend((0..64).map(|i| {
+                    let id = Uuid::from_u128(0x6E00_0000_0000_0000_0000_0000_0000_1000 + i);
+                    g(id, &format!("Demo group {:02}", i + 1), true)
+                }));
+            }
             if !group::adjust_groups(&mut groups) {
                 return vec![NetEvent::Groups(groups)];
             }
@@ -3673,8 +3716,8 @@ pub fn action_overlay(id: u32, pos: Vec3, rotation: Quat) -> NetEvent {
     }
 }
 
-/// A non-actionable face placed before Buy. Zero-alpha texture pixels let
-/// left clicks through; every nonzero Blend texel still blocks them.
+/// A non-actionable face placed before Buy. Blend texture pixels with
+/// alpha <= 32/255 let left clicks through, following the Legacy Viewer.
 pub fn alpha_click_overlay(mode: &str, pos: Vec3, rotation: Quat) -> NetEvent {
     let texture = match mode.trim_end_matches("-ready") {
         "blend-faint" => TEX_PICK_FAINT,
@@ -4027,6 +4070,11 @@ fn map_block(x: u16, y: u16, name: &str, access: u8) -> aurora_net::MapBlock {
     }
 }
 
+/// AURORA_DEMO_TP_NO_ARRIVAL=1: the region never confirms a demo teleport.
+pub fn tp_no_arrival() -> bool {
+    std::env::var_os("AURORA_DEMO_TP_NO_ARRIVAL").is_some()
+}
+
 pub fn friend_join_scenario() -> bool {
     std::env::var("AURORA_DEMO_FRIEND_LOCATION").is_ok_and(|m| {
         matches!(
@@ -4181,6 +4229,7 @@ pub fn events() -> Vec<NetEvent> {
     for q in 0..4 {
         ev.push(NetEvent::ParcelOverlay {
             handle: HANDLE,
+            size: (256, 256),
             sequence: q as i32,
             data: cells[q * 1024..(q + 1) * 1024].to_vec(),
         });
@@ -4540,6 +4589,56 @@ pub fn events() -> Vec<NetEvent> {
             ExtraParams::default(),
             "",
         ));
+        // #1494 reproduction: adjacent ceiling projectors, overlapping on
+        // the same floor, each with a post that can cast a visible shadow.
+        if mode.starts_with("cluster") {
+            add(prim(
+                9720,
+                Vec3::new(135.0, 114.0, floor + 0.05),
+                Quat::IDENTITY,
+                Vec3::new(9.0, 9.0, 0.1),
+                boxp,
+                te([0.7, 0.7, 0.7, 1.0], 0, false, 0.0),
+                ExtraParams::default(),
+                "",
+            ));
+            for k in 0..12u32 {
+                let x = 132.5 + (k % 3) as f32 * 2.0;
+                let y = 111.0 + (k / 3) as f32 * 2.0;
+                add(prim(
+                    9721 + k * 2,
+                    Vec3::new(x, y, floor + 4.0),
+                    Quat::IDENTITY,
+                    Vec3::new(0.3, 0.3, 0.1),
+                    boxp,
+                    te([1.0, 1.0, 1.0, 1.0], 0, true, 0.0),
+                    ExtraParams {
+                        light: Some(LightParams {
+                            color: [1.0, 0.9, 0.7, 1.0],
+                            radius: 10.0,
+                            cutoff: 0.0,
+                            falloff: 0.0,
+                        }),
+                        light_image: Some(aurora_prim::extra::LightImageParams {
+                            texture: BLANK_TEXTURE,
+                            params: Vec3::new(1.4, 0.0, 0.0),
+                        }),
+                        ..Default::default()
+                    },
+                    "",
+                ));
+                add(prim(
+                    9722 + k * 2,
+                    Vec3::new(x + 0.3, y, floor + 1.2),
+                    Quat::IDENTITY,
+                    Vec3::new(0.35, 0.35, 2.2),
+                    boxp,
+                    te([0.3, 0.3, 0.35, 1.0], 0, false, 0.0),
+                    ExtraParams::default(),
+                    "",
+                ));
+            }
+        }
         // an ordinary point light beside them, the same in both modes
         add(prim(
             9716,
@@ -5239,6 +5338,80 @@ pub fn events() -> Vec<NetEvent> {
             id += 1;
         }
     }
+    // AURORA_DEMO_PROBE_ROOM=<ambiance>[,box]: a closed room with a lamp and a
+    // manual probe of that ambiance, at AURORA_DEMO_POS="100,100" (#2217): a
+    // sphere that crosses the floor, or a box that fills the room
+    if let Ok(room) = std::env::var("AURORA_DEMO_PROBE_ROOM") {
+        let mut values = room.split(',');
+        let ambiance = values.next().and_then(|v| v.trim().parse::<f32>().ok()).unwrap_or(1.0);
+        let filled = values.next().is_some_and(|v| v.trim() == "box");
+        let (x, y) = (100.0, 100.0);
+        let z = g(x, y);
+        let (half, height) = (8.0, 5.0);
+        let matte = [0.72, 0.68, 0.6, 1.0];
+        for (offset, scale) in [
+            (Vec3::new(0.0, 0.0, 0.1), Vec3::new(2.0 * half, 2.0 * half, 0.2)),
+            (Vec3::new(0.0, 0.0, height), Vec3::new(2.0 * half, 2.0 * half, 0.2)),
+            (Vec3::new(half, 0.0, height / 2.0), Vec3::new(0.2, 2.0 * half, height)),
+            (Vec3::new(-half, 0.0, height / 2.0), Vec3::new(0.2, 2.0 * half, height)),
+            (Vec3::new(0.0, half, height / 2.0), Vec3::new(2.0 * half, 0.2, height)),
+            (Vec3::new(0.0, -half, height / 2.0), Vec3::new(2.0 * half, 0.2, height)),
+        ] {
+            add(prim(
+                id,
+                Vec3::new(x, y, z) + offset,
+                Quat::IDENTITY,
+                scale,
+                boxp,
+                te(matte, 0, false, 0.0),
+                ExtraParams::default(),
+                "",
+            ));
+            id += 1;
+        }
+        add(prim(
+            id,
+            Vec3::new(x - 4.0, y + 4.0, z + 3.5),
+            Quat::IDENTITY,
+            Vec3::splat(0.3),
+            boxp,
+            te([1.0, 0.85, 0.6, 1.0], 0, true, 0.2),
+            ExtraParams {
+                light: Some(LightParams {
+                    color: [1.0, 0.8, 0.55, 1.0],
+                    radius: 10.0,
+                    cutoff: 0.0,
+                    falloff: 0.75,
+                }),
+                ..Default::default()
+            },
+            "",
+        ));
+        id += 1;
+        let (center, scale, flags) = if filled {
+            (Vec3::new(x, y, z + height / 2.0), Vec3::new(2.0 * half, 2.0 * half, height), 0x1)
+        } else {
+            (Vec3::new(x + 3.0, y + 3.0, z + 0.2), Vec3::splat(4.0), 0x0)
+        };
+        add(prim(
+            id,
+            center,
+            Quat::IDENTITY,
+            scale,
+            boxp,
+            te([1.0, 1.0, 1.0, 0.0], 0, false, 0.0),
+            ExtraParams {
+                reflection_probe: Some(aurora_prim::extra::ReflectionProbeParams {
+                    ambiance,
+                    clip_distance: 0.0,
+                    flags,
+                }),
+                ..Default::default()
+            },
+            "",
+        ));
+        id += 1;
+    }
     // glass panel (alpha blend)
     add(prim(
         id,
@@ -5728,8 +5901,47 @@ pub fn events() -> Vec<NetEvent> {
     ev.extend(sculpt::events());
     ev.extend(plants::events());
     ev.extend(blend_shadows::events());
+    ev.extend(alpha_mask_ab::events());
+    ev.extend(tortured_prims::events());
     ev.extend(bom_rezzed::events());
+    ev.extend(land_beside_events());
+    ev.extend(object_snap::events());
     ev
+}
+
+/// AURORA_DEMO_LAND_BESIDE=1: a 4 m square frame lying on the bare ground
+/// 5 m along the start view (a box prim hollowed at 85 %), with
+/// AURORA_DEMO_POS="80,100" (open land: the plaza's floor is a prim). Its
+/// box spans the ground in its middle, its surface does not: a right click
+/// there is the land's (the land menu, Edit terrain), as beside a mesh whose
+/// box covers the ground around it.
+fn land_beside_events() -> Vec<NetEvent> {
+    if !std::env::var("AURORA_DEMO_LAND_BESIDE").is_ok_and(|v| v.trim() == "1") {
+        return Vec::new();
+    }
+    let eye = std::env::var("AURORA_DEMO_POS")
+        .ok()
+        .map(|v| v.split(',').filter_map(|s| s.trim().parse::<f32>().ok()).collect::<Vec<_>>())
+        .filter(|p| p.len() >= 2)
+        .map_or(glam::Vec2::new(80.0, 100.0), |p| glam::Vec2::new(p[0], p[1]));
+    // the start view (AURORA_DEMO_FOLIAGE's `look`)
+    let at = eye + glam::Vec2::new(0.8, 0.4).normalize() * 5.0;
+    let (x, y) = (at.x, at.y);
+    let frame = prim(
+        99700,
+        Vec3::new(x, y, height(x, y) + 0.15),
+        Quat::IDENTITY,
+        Vec3::new(4.0, 4.0, 0.3),
+        // profile_hollow in 1/50000ths: 85 %
+        shape(LL_PCODE_PATH_LINE, LL_PCODE_PROFILE_SQUARE, 100, 42500, 0),
+        te([0.85, 0.55, 0.2, 1.0], 0, false, 0.0),
+        Default::default(),
+        "",
+    );
+    vec![NetEvent::ObjectUpdates {
+        handle: HANDLE,
+        objects: vec![frame],
+    }]
 }
 
 /// Unrelated demos stay quiet; each explicit scenario gets only its fixtures.
@@ -5775,6 +5987,7 @@ fn notification_samples(notifications: bool, inventory_offer: bool, menu: Option
             object_id: Uuid::from_u128(0xF1),
             object_name: aurora_i18n::tr!("demo-resident-picker").into(),
             owner_name: aurora_i18n::tr!("demo-violet-wolf").into(),
+            owner_id: Uuid::nil(),
             message,
             channel: -4243,
             buttons: ["1", "2", "3", "4"].map(str::to_owned).to_vec(),
@@ -5792,6 +6005,7 @@ fn notification_samples(notifications: bool, inventory_offer: bool, menu: Option
             object_id: Uuid::from_u128(0xF0),
             object_name: aurora_i18n::tr!("demo-fountain").into(),
             owner_name: owner.into(),
+            owner_id: Uuid::nil(),
             message: aurora_i18n::tr!("demo-choose-a-color-for-the-water").into(),
             channel: -4242,
             buttons: vec![
@@ -5805,6 +6019,7 @@ fn notification_samples(notifications: bool, inventory_offer: bool, menu: Option
             object_id: Uuid::from_u128(0xF2),
             object_name: aurora_i18n::tr!("demo-land-script-sign").into(),
             owner_name: owner.into(),
+            owner_id: Uuid::nil(),
             message: aurora_i18n::tr!("demo-scripted-textbox").into(),
             channel: -4244,
             buttons: vec!["!!llTextBox!!".into()],
@@ -5891,6 +6106,7 @@ fn notification_samples(notifications: bool, inventory_offer: bool, menu: Option
         object_id: Uuid::from_u128(0xF0),
         object_name: object_name.into(),
         owner_name: aurora_i18n::tr!("demo-violet-wolf").into(),
+        owner_id: Uuid::nil(),
         message: message.into(),
         channel: -4242,
         buttons,
@@ -5957,14 +6173,19 @@ pub fn chime() -> (Uuid, aurora_audio::SoundClip) {
     (u(0x50_0001), aurora_audio::SoundClip::from_pcm(&pcm, 1, rate))
 }
 
-/// AURORA_DEMO_SOUND: an interface sound for the offline demo, read (never
-/// written) from the real sound cache when a grid session already loaded it,
-/// else a short tick whose pitch depends on the asset (so that different
-/// sounds can be told apart).
+/// AURORA_DEMO_SOUND: an interface sound for the offline demo. A development
+/// build reads it (never writes it) from the sound cache of grid sessions
+/// when one already loaded it (`source`); otherwise a short tick whose pitch
+/// depends on the asset (so that different sounds can be told apart).
 pub fn ui_sound(id: Uuid) -> aurora_audio::SoundClip {
     let demo_cache = crate::settings::cache_dir();
-    if let Some(real) = demo_cache.parent()
-        && let Ok(data) = std::fs::read(real.join("sound").join(format!("{id}.ogg")))
+    if source::reads_cache_files()
+        && let Some(real) = demo_cache.parent()
+        && let Ok(data) = crate::cache::read(
+            real.join(crate::settings::ASSET_STORE)
+                .join("sound")
+                .join(format!("{}.ogg", crate::cache::keyed_name(&id))),
+        )
         && let Ok(clip) = aurora_audio::SoundClip::decode(&data)
     {
         return clip;
@@ -6749,7 +6970,8 @@ pub const BUSY_SPINNERS: u32 = 60;
 
 /// What a busy place has besides worn prims and meshes, for `n` crowd
 /// avatars: on each of them a flexible ribbon and a spinning ornament with
-/// two prims linked below it (none of which the GPU places from an anchor);
+/// two prims linked below it (the ribbon left to the sync, the ornament
+/// placed by the GPU from a mover, `AURORA_MOVING_ANCHORS`);
 /// on our avatar a HUD of [`BUSY_HUD_PRIMS`] prims; and
 /// [`BUSY_SPINNERS`] spinning objects on the ground.
 pub fn crowd_busy_events(n: u32) -> Vec<NetEvent> {
@@ -7708,6 +7930,40 @@ fn soft_mask_texture() -> (Vec<u8>, u32, u32) {
     (px, N, N)
 }
 
+/// Fifty-second offline performance trial, with fifteen seconds of warm-up.
+pub fn projector_bench_done() -> bool {
+    static START: std::sync::OnceLock<Option<std::time::Instant>> = std::sync::OnceLock::new();
+    START
+        .get_or_init(|| {
+            (std::env::var("AURORA_DEMO_PROJECTOR").as_deref() == Ok("cluster-bench")).then(|| {
+                log::info!("projector benchmark begin");
+                std::time::Instant::now()
+            })
+        })
+        .is_some_and(|start| start.elapsed().as_secs() >= 50)
+}
+
+/// Fixed framing of the #1494 offline fixture, or a repeatable camera sweep.
+pub fn projector_camera(frame: u64) -> Option<(Vec3, Vec3)> {
+    let mode = std::env::var("AURORA_DEMO_PROJECTOR").ok()?;
+    if !mode.starts_with("cluster") {
+        return None;
+    }
+    let floor = height(140.0, 130.0) + 0.35;
+    let t = frame.saturating_sub(700) as f32;
+    let angle = -2.35
+        + if mode == "cluster-orbit" {
+            t * 0.003
+        } else if mode == "cluster-scan" {
+            (t * 0.02).sin() * 0.7
+        } else {
+            0.0
+        };
+    let target = Vec3::new(135.0, 114.0, floor + 0.8);
+    let eye = Vec3::new(135.0 + 8.0 * angle.cos(), 114.0 + 8.0 * angle.sin(), floor + 5.0);
+    Some((eye, target))
+}
+
 /// The procedural texture `id` takes a mip chain (the others are the
 /// 64-texel test panels, kept as they are).
 pub fn local_texture_mips(id: &Uuid) -> bool {
@@ -7921,6 +8177,28 @@ pub fn loop_animation() -> aurora_assets::Animation {
     anim
 }
 
+/// `AURORA_DEMO_PELVIS_CONSTRAINT`: the loop below, with a pelvis constraint
+/// that carries the body out of sight for the last 4 s of every 8 s.
+pub fn pelvis_constraint_animation() -> (aurora_assets::Animation, Vec<aurora_assets::anim::Constraint>) {
+    let mut anim = loop_animation();
+    anim.duration = 8.0;
+    anim.loop_out = 8.0;
+    let constraint = aurora_assets::anim::Constraint {
+        chain_length: 0,
+        constraint_type: 0,
+        source_volume: "PELVIS".into(),
+        source_offset: Vec3::new(0.0, 0.0, f32::MAX),
+        target_volume: "PELVIS".into(),
+        target_offset: Vec3::ZERO,
+        target_dir: Vec3::ZERO,
+        ease_in_start: 4.0,
+        ease_in_stop: 163_840.0,
+        ease_out_start: 163_840.0,
+        ease_out_stop: 163_840.0,
+    };
+    (anim, vec![constraint])
+}
+
 pub const SYNC_LEADER_ANIM: Uuid = Uuid::from_u128(0xD0D0_A111_0000_0000_0000_0000_0000_0021);
 pub const SYNC_DELAYED_ANIM: Uuid = Uuid::from_u128(0xD0D0_A111_0000_0000_0000_0000_0000_0022);
 
@@ -8118,6 +8396,27 @@ pub const TEX_ORM_DISC: Uuid = Uuid::from_u128(0xDE40_7E10_0000_0000_0000_0000_0
 /// Foliage of AURORA_DEMO_FOLIAGE (256 × 256, alpha a mask): thin blades
 /// and small leaves, about a sixth of the texels drawn.
 pub const TEX_FOLIAGE: Uuid = Uuid::from_u128(0xDE40_7E10_0000_0000_0000_0000_0000_0009);
+/// Chain of the demo leash (AURORA_DEMO_PARTICLES=leash): a horizontal band
+/// of two links, transparent above and below, as leash textures are drawn.
+const TEX_LEASH_CHAIN: Uuid = Uuid::from_u128(0xDE40_7E10_0000_0000_0000_0000_0000_000A);
+
+/// Two metal links along x, 12 texels thick in the middle rows. A ribbon
+/// lays u along its segment: turned 90° it draws a crossbar per link.
+fn leash_chain_texture() -> (Vec<u8>, u32, u32) {
+    const N: u32 = 64;
+    let mut px = Vec::with_capacity((N * N * 4) as usize);
+    for y in 0..N {
+        for x in 0..N {
+            let across = (y as f32 + 0.5 - N as f32 * 0.5).abs() / 6.0;
+            // a darker joint where two links meet
+            let joint = (x % 32) < 3;
+            let shade = if joint { 110 } else { (235.0 - across * 90.0) as u8 };
+            let a = if across < 1.0 { 255 } else { 0 };
+            px.extend_from_slice(&[shade, shade, shade.saturating_add(12), a]);
+        }
+    }
+    (px, N, N)
+}
 
 #[cfg(test)]
 mod foliage_tests {
@@ -8222,6 +8521,9 @@ fn alpha_panels() -> [(Uuid, Option<Uuid>, &'static str); 6] {
 
 /// Pixels of a procedural demo texture (RGBA8, 64×64; the hair demo's 256×256).
 pub fn local_texture(id: &Uuid) -> Option<(Vec<u8>, u32, u32)> {
+    if let Some(texture) = alpha_mask_ab::texture(id) {
+        return Some(texture);
+    }
     if let Some(pixels) = texture_library::texture(id) {
         return Some(pixels);
     }
@@ -8252,6 +8554,9 @@ pub fn local_texture(id: &Uuid) -> Option<(Vec<u8>, u32, u32)> {
     }
     if *id == TEX_FOLIAGE {
         return Some(foliage_texture());
+    }
+    if *id == TEX_LEASH_CHAIN {
+        return Some(leash_chain_texture());
     }
     if let Some(species) = plants::texture(id) {
         return Some(species);
@@ -8761,13 +9066,23 @@ fn demo_day(sky: Llsd) -> Llsd {
         .unwrap_or_else(|| llsd_map! { "type" => "water" });
     frames.insert("water".into(), water);
     let key = |name: &str| Llsd::Array(vec![llsd_map! { "key_keyframe" => 0.0, "key_name" => name }]);
+    let mut day = llsd_map! {
+        "frames" => Llsd::Map(frames),
+        "tracks" => Llsd::Array(vec![key("water"), key("sky")]),
+    };
+    // AURORA_DEMO_SKY_FLAGS: the day's settings flags (0 as a viewer saves
+    // them by default; `none` leaves the key out, which reads as 0)
+    match std::env::var("AURORA_DEMO_SKY_FLAGS").ok().as_deref().map(str::trim) {
+        Some("none") => {}
+        flags => {
+            let flags = flags.and_then(|f| f.parse::<i32>().ok()).unwrap_or(0);
+            day.insert("flags", flags);
+        }
+    }
     llsd_map! {
         "day_length" => 14400,
         "day_offset" => 0,
-        "day_cycle" => llsd_map! {
-            "frames" => Llsd::Map(frames),
-            "tracks" => Llsd::Array(vec![key("water"), key("sky")]),
-        },
+        "day_cycle" => day,
     }
 }
 
@@ -8831,6 +9146,8 @@ mod particle_tests {
         assert_eq!(d.burst_part_count, 2);
         assert_eq!(d.part_accel, Vec3::new(0.0, 0.0, -1.0));
         assert_eq!(d.target_id, target);
+        assert_eq!(d.part_image_id, TEX_LEASH_CHAIN);
+        assert!(local_texture(&TEX_LEASH_CHAIN).is_some());
         assert_eq!(d.part.flags & ps::LL_PART_RIBBON_MASK, ps::LL_PART_RIBBON_MASK);
         assert_eq!(d.part.max_age, 3.5);
         assert_eq!(d.part.start_scale, glam::Vec2::new(0.0625, 2.5));
